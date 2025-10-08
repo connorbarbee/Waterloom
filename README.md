@@ -7,6 +7,7 @@ offline on any machine.
 ## Features
 
 - 🌄 Upload any PNG or JPEG and instantly preview the watercolor result side-by-side.
+- 📸 Camera rotation metadata is respected so portraits and landscapes always display correctly.
 - 🖥️ Choose between a traditional desktop window or the Streamlit web panel.
 - 🎚️ Adjust brush smoothness, color fidelity, ink outlines, paper texture, and more to match your style.
 - 💾 Download/save the finished artwork as a high-quality PNG, all without leaving your machine.
@@ -63,8 +64,8 @@ platform.
 
 ## How it works
 
-- The shared logic in `waterloom_core.py` processes images with OpenCV's `cv2.stylization`, adds adaptive ink edges, and mixes in a
-  procedurally generated paper texture with optional vibrance/brightness tweaks.
+- The shared logic in `waterloom_core.py` processes images with OpenCV's `cv2.stylization`, adds adaptive ink edges, respects EXIF
+  orientation metadata, and mixes in a procedurally generated paper texture with optional vibrance/brightness tweaks.
 - `desktop_app.py` wraps the core pipeline in a PySide6 window with file dialogs, live previews, and save/export buttons.
 - `app.py` exposes the same controls through Streamlit for those who prefer a browser-based panel.
 

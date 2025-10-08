@@ -5,13 +5,13 @@ from __future__ import annotations
 import io
 import os
 
-import numpy as np
 from PIL import Image
 import streamlit as st
 
 from waterloom_core import (
     WatercolorSettings,
-    stylize_image,
+    pil_to_rgb_array,
+    stylize,
     to_pil_image,
 )
 
@@ -139,27 +139,27 @@ def main() -> None:
         st.info("Start by uploading a photo — portraits and landscapes work beautifully!")
         return
 
-    original_image = Image.open(uploaded_file).convert("RGB")
-    image_array = np.array(original_image)
+    try:
+        with Image.open(uploaded_file) as uploaded_pil:
+            original_array = pil_to_rgb_array(uploaded_pil)
+    except Exception:
+        st.error("We couldn't read that file. Please upload a standard PNG or JPEG.")
+        return
 
-    with st.spinner("Mixing pigments and brushing strokes..."):
-        stylized_array = stylize_image(
-            image_array,
-            settings.smoothness,
-            settings.fidelity,
-            settings.edge_strength,
-            settings.edge_blur,
-            settings.texture_intensity,
-            settings.vibrance,
-            settings.brightness,
-            settings.max_edge,
-        )
+    original_display = to_pil_image(original_array)
+
+    try:
+        with st.spinner("Mixing pigments and brushing strokes..."):
+            stylized_array = stylize(original_array, settings)
+    except Exception as exc:
+        st.error(f"Something went wrong while painting: {exc}")
+        return
 
     stylized_image = to_pil_image(stylized_array)
 
     col1, col2 = st.columns(2)
     with col1:
-        st.image(original_image, caption="Original", use_column_width=True)
+        st.image(original_display, caption="Original", use_column_width=True)
     with col2:
         st.image(stylized_image, caption="Watercolor", use_column_width=True)
 

@@ -2,13 +2,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
+
+_RNG = np.random.default_rng()
 
 
-@dataclass
+def _clamp(value: float, minimum: float, maximum: float) -> float:
+    return max(minimum, min(maximum, value))
+
+
+@dataclass(frozen=True)
 class WatercolorSettings:
     """Tunable parameters for the watercolor effect."""
 
@@ -20,6 +27,46 @@ class WatercolorSettings:
     vibrance: float = 0.15
     brightness: float = 0.05
     max_edge: int = 1920
+
+    def normalized(self) -> "WatercolorSettings":
+        """Return a copy with all parameters clamped to safe ranges."""
+
+        edge_blur = max(1, int(round(self.edge_blur)))
+        if edge_blur % 2 == 0:
+            edge_blur += 1
+
+        return WatercolorSettings(
+            smoothness=int(round(_clamp(self.smoothness, 10, 200))),
+            fidelity=float(_clamp(self.fidelity, 0.05, 1.0)),
+            edge_strength=int(round(_clamp(self.edge_strength, 0, 255))),
+            edge_blur=edge_blur,
+            texture_intensity=float(_clamp(self.texture_intensity, 0.0, 1.0)),
+            vibrance=float(_clamp(self.vibrance, 0.0, 1.0)),
+            brightness=float(_clamp(self.brightness, -1.0, 1.0)),
+            max_edge=int(round(_clamp(self.max_edge, 64, 8192))),
+        )
+
+
+def _ensure_rgb(image: np.ndarray) -> np.ndarray:
+    """Return a contiguous RGB array from diverse numpy inputs."""
+
+    if image.ndim == 2:
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+    elif image.ndim == 3:
+        channels = image.shape[2]
+        if channels == 4:
+            image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
+        elif channels == 1:
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        elif channels != 3:
+            raise ValueError("Unsupported channel configuration")
+    else:
+        raise ValueError("Expected a 2D or 3D image array")
+
+    if image.dtype != np.uint8:
+        image = np.clip(image, 0, 255).astype(np.uint8)
+
+    return np.ascontiguousarray(image)
 
 
 def _normalize_image(image: np.ndarray, max_dimension: int) -> np.ndarray:
@@ -65,11 +112,35 @@ def _paper_texture(width: int, height: int, intensity: float) -> np.ndarray:
     if intensity <= 0:
         return np.zeros((height, width, 1), dtype=np.uint8)
 
-    noise = np.random.normal(0.5, 0.18, size=(height, width)).astype(np.float32)
-    noise = cv2.GaussianBlur(noise, (0, 0), sigmaX=8, sigmaY=8)
-    noise = np.clip(noise, 0.0, 1.0)
-    texture = (noise * 255).astype(np.uint8)
-    return texture[:, :, None]
+    base = _RNG.normal(0.5, 0.18, size=(height, width)).astype(np.float32)
+    soft = cv2.GaussianBlur(base, (0, 0), sigmaX=6, sigmaY=6)
+    fibers = cv2.GaussianBlur(base, (0, 0), sigmaX=1.2, sigmaY=1.2)
+    combined = 0.6 * soft + 0.4 * fibers
+    contrast = 0.6 + 0.8 * intensity
+    texture = np.clip(0.5 + (combined - 0.5) * contrast, 0.0, 1.0)
+    return (texture * 255).astype(np.uint8)[:, :, None]
+
+
+def _apply_texture(rgb: np.ndarray, intensity: float) -> np.ndarray:
+    """Blend a generated paper texture into the RGB image."""
+
+    if intensity <= 0:
+        return rgb
+
+    texture = _paper_texture(rgb.shape[1], rgb.shape[0], intensity)
+    texture_rgb = np.repeat(texture, 3, axis=2)
+
+    rgb_f = rgb.astype(np.float32)
+    texture_f = texture_rgb.astype(np.float32)
+
+    texture_weight = 0.18 + 0.32 * intensity
+    blended = rgb_f * (1.0 - texture_weight) + texture_f * texture_weight
+
+    # Add subtle contrast variation to mimic watercolor pooling.
+    grain = (texture_f / 255.0 - 0.5) * 60.0 * intensity
+    blended = np.clip(blended + grain, 0.0, 255.0)
+
+    return blended.astype(np.uint8)
 
 
 def stylize_image(
@@ -83,23 +154,46 @@ def stylize_image(
     brightness: float,
     max_dimension: int,
 ) -> np.ndarray:
+    """Backward compatible wrapper for the stylizer."""
+
+    settings = WatercolorSettings(
+        smoothness=smoothness,
+        fidelity=fidelity,
+        edge_strength=edge_strength,
+        edge_blur=edge_blur,
+        texture_intensity=texture_intensity,
+        vibrance=vibrance,
+        brightness=brightness,
+        max_edge=max_dimension,
+    )
+    return stylize(image, settings)
+
+
+def stylize(image: np.ndarray, settings: WatercolorSettings) -> np.ndarray:
     """Convert an RGB image array to a watercolor-styled array."""
 
-    prepared = _normalize_image(image, max_dimension)
+    normalized = settings.normalized()
+    prepared = _normalize_image(_ensure_rgb(image), normalized.max_edge)
     bgr = cv2.cvtColor(prepared, cv2.COLOR_RGB2BGR)
 
-    smoothed = cv2.edgePreservingFilter(bgr, flags=1, sigma_s=60, sigma_r=0.45)
+    smoothing_sigma = int(round(_clamp(normalized.smoothness, 10, 200)))
+    smoothing = cv2.edgePreservingFilter(
+        bgr,
+        flags=1,
+        sigma_s=_clamp(smoothing_sigma * 0.9, 10, 200),
+        sigma_r=_clamp(normalized.fidelity * 0.6 + 0.2, 0.1, 1.0),
+    )
     stylized = cv2.stylization(
-        smoothed,
-        sigma_s=smoothness,
-        sigma_r=fidelity,
+        smoothing,
+        sigma_s=smoothing_sigma,
+        sigma_r=_clamp(normalized.fidelity, 0.05, 1.0),
     )
 
-    detail = cv2.detailEnhance(smoothed, sigma_s=10, sigma_r=0.15)
-    stylized = cv2.addWeighted(stylized, 0.85, detail, 0.15, 0)
+    detail = cv2.detailEnhance(smoothing, sigma_s=12, sigma_r=0.18)
+    stylized = cv2.addWeighted(stylized, 0.82, detail, 0.18, 0)
 
-    gray = cv2.cvtColor(smoothed, cv2.COLOR_BGR2GRAY)
-    gray = cv2.medianBlur(gray, max(1, edge_blur))
+    gray = cv2.cvtColor(smoothing, cv2.COLOR_BGR2GRAY)
+    gray = cv2.medianBlur(gray, normalized.edge_blur)
     edges = cv2.adaptiveThreshold(
         gray,
         255,
@@ -108,24 +202,15 @@ def stylize_image(
         blockSize=9,
         C=2,
     )
-    edges = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-    edges = 255 - edges
+    edges = cv2.cvtColor(255 - edges, cv2.COLOR_GRAY2BGR)
 
-    edge_alpha = np.clip(edge_strength / 255.0, 0.0, 1.0)
+    edge_alpha = np.clip(normalized.edge_strength / 255.0, 0.0, 1.0)
     stylized = cv2.addWeighted(stylized, 1.0, edges, edge_alpha, 0)
 
     rgb = cv2.cvtColor(stylized, cv2.COLOR_BGR2RGB)
-    rgb = _apply_vibrance(rgb, vibrance)
-    rgb = _adjust_brightness(rgb, brightness)
-
-    texture = _paper_texture(rgb.shape[1], rgb.shape[0], texture_intensity)
-    if texture_intensity > 0:
-        texture_f = texture.astype(np.float32) / 255.0
-        rgb = np.clip(
-            rgb.astype(np.float32) * (1.0 - 0.25 * texture_intensity) + texture_f * 255,
-            0,
-            255,
-        )
+    rgb = _apply_vibrance(rgb, normalized.vibrance)
+    rgb = _adjust_brightness(rgb, normalized.brightness)
+    rgb = _apply_texture(rgb, normalized.texture_intensity)
 
     return rgb.astype(np.uint8)
 
@@ -136,15 +221,29 @@ def to_pil_image(image_array: np.ndarray) -> Image.Image:
     return Image.fromarray(image_array.astype(np.uint8), mode="RGB")
 
 
+def pil_to_rgb_array(image: Image.Image) -> np.ndarray:
+    """Convert a PIL image to a contiguous RGB numpy array."""
+
+    corrected = ImageOps.exif_transpose(image).convert("RGB")
+    array = np.array(corrected)
+    if array.ndim != 3 or array.shape[2] != 3:
+        raise ValueError("Expected an RGB image")
+    return np.ascontiguousarray(array)
+
+
 def load_image(path: str) -> np.ndarray:
     """Load an image file path into an RGB numpy array."""
 
-    pil_image = Image.open(path).convert("RGB")
-    return np.array(pil_image)
+    with Image.open(path) as pil_image:
+        return pil_to_rgb_array(pil_image)
 
 
 def save_image(path: str, image_array: np.ndarray) -> None:
     """Persist an RGB numpy array to disk as a PNG image."""
 
+    destination = Path(path)
+    if destination.parent and not destination.parent.exists():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+
     image = to_pil_image(image_array)
-    image.save(path, format="PNG")
+    image.save(destination, format="PNG")

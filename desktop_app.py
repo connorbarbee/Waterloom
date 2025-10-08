@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QAction, QIcon, QImage, QPixmap
 from PySide6.QtWidgets import (
@@ -26,7 +25,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from waterloom_core import WatercolorSettings, stylize_image, to_pil_image
+from waterloom_core import WatercolorSettings, load_image, save_image, stylize
 
 
 def numpy_to_qimage(image: np.ndarray) -> QImage:
@@ -152,16 +151,24 @@ class ImagePreview(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("border: 1px solid #ccc; background-color: #fdfdfd;")
 
+        self._pixmap: Optional[QPixmap] = None
+
     def set_image(self, image: Optional[np.ndarray]) -> None:
         if image is None:
             self.setText("No preview available")
             self.setPixmap(QPixmap())
+            self._pixmap = None
             return
 
         self.setText("")
         qimage = numpy_to_qimage(image)
-        pixmap = QPixmap.fromImage(qimage)
-        self.setPixmap(pixmap.scaled(
+        self._pixmap = QPixmap.fromImage(qimage)
+        self._update_pixmap()
+
+    def _update_pixmap(self) -> None:
+        if not self._pixmap:
+            return
+        self.setPixmap(self._pixmap.scaled(
             self.size(),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
@@ -169,13 +176,7 @@ class ImagePreview(QLabel):
 
     def resizeEvent(self, event) -> None:  # noqa: D401, N802 - Qt override
         super().resizeEvent(event)
-        if not self.pixmap():
-            return
-        self.setPixmap(self.pixmap().scaled(
-            self.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        ))
+        self._update_pixmap()
 
 
 class WaterloomWindow(QMainWindow):
@@ -300,13 +301,10 @@ class WaterloomWindow(QMainWindow):
 
     def _load_image(self, path: str) -> None:
         try:
-            with Image.open(path) as img:
-                pil_image = img.convert("RGB")
+            rgb = load_image(path)
         except Exception:  # pragma: no cover - user error path
             QMessageBox.warning(self, "Waterloom", "Unable to open that file.")
             return
-
-        rgb = np.array(pil_image)
 
         self._current_image = rgb
         self._stylized_image = None
@@ -335,17 +333,7 @@ class WaterloomWindow(QMainWindow):
         settings = self._gather_settings()
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            result = stylize_image(
-                self._current_image,
-                settings.smoothness,
-                settings.fidelity,
-                settings.edge_strength,
-                settings.edge_blur,
-                settings.texture_intensity,
-                settings.vibrance,
-                settings.brightness,
-                settings.max_edge,
-            )
+            result = stylize(self._current_image, settings)
         except Exception as exc:  # pragma: no cover - user error path
             QMessageBox.critical(self, "Waterloom", f"Failed to create watercolor: {exc}")
             return
@@ -371,7 +359,7 @@ class WaterloomWindow(QMainWindow):
 
         path = dialog.selectedFiles()[0]
         try:
-            to_pil_image(self._stylized_image).save(path, format="PNG")
+            save_image(path, self._stylized_image)
         except Exception as exc:  # pragma: no cover - user error path
             QMessageBox.critical(self, "Waterloom", f"Unable to save image: {exc}")
 
