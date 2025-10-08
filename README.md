@@ -1,2 +1,2 @@
 # Waterloom
-A free app that turns images into beautiful watercolor paintings.
+An app that turns images into beautiful watercolor paintings.
