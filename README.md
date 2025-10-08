@@ -1,6 +1,6 @@
 # Waterloom
 
-Waterloom is a tiny offline-friendly app that turns everyday photos into dreamy watercolor paintings. The interface runs locally using [Streamlit](https://streamlit.io/) and relies on OpenCV's stylization filters plus a touch of edge inking for a hand-painted finish.
+Waterloom is a tiny, free offline-friendly app that turns everyday photos into dreamy watercolor paintings. The interface runs locally using [Streamlit](https://streamlit.io/) and relies on OpenCV's stylization filters plus a touch of edge inking for a hand-painted finish.
 
 ## Features
 
