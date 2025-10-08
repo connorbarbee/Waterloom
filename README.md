@@ -19,7 +19,7 @@ Waterloom is a tiny offline-friendly app that turns everyday photos into dreamy 
    ```bash
    pip install -r requirements.txt
    ```
-3. **Run the app locally.**
+3. **Download and run the app locally.**
    ```bash
    streamlit run app.py
    ```
